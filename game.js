@@ -128,6 +128,112 @@ function hexToRgba(hex, alpha){
   return 'rgba('+r+','+g+','+b+','+ (alpha||1) +')';
 }
 
+// --- Sprite helpers (embedded SVG assets + caching) ---
+const spriteCache = {};
+
+function buildSvgDataUri(svg){
+  // encodeURIComponent is sufficient for inline SVG in data URI
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+function loadSprite(name, svg){
+  return new Promise((resolve, reject)=>{
+    if(spriteCache[name]) return resolve(spriteCache[name]);
+    const img = new Image();
+    img.onload = ()=>{ spriteCache[name] = img; resolve(img); };
+    img.onerror = (e)=>{ console.warn('Failed to load sprite', name, e); reject(e); };
+    img.src = buildSvgDataUri(svg);
+  });
+}
+
+// SVG generators (simple, self-contained shapes)
+function playerSvg(){
+  return `<?xml version='1.0' encoding='utf-8'?>
+  <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+    <circle cx='50' cy='50' r='38' fill='#ffd86b' stroke='#ffb347' stroke-width='4'/>
+    <!-- mouth (drawn as triangle with canvas background color) -->
+    <polygon points='50,50 90,40 90,60' fill='#02030b'/>
+    <!-- eye -->
+    <circle cx='66' cy='35' r='6' fill='#fff'/>
+    <circle cx='68' cy='35' r='3' fill='#000'/>
+  </svg>`;
+}
+
+function enemySvg(color){
+  return `<?xml version='1.0' encoding='utf-8'?>
+  <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+    <path d='M10 45 A40 40 0 0 1 90 45 L90 70 A10 10 0 0 1 70 70 A10 10 0 0 1 50 70 A10 10 0 0 1 30 70 A10 10 0 0 1 10 70 Z' fill='${color}' stroke='rgba(0,0,0,0.08)' stroke-width='2'/>
+    <!-- eyes -->
+    <circle cx='38' cy='50' r='9' fill='#fff'/>
+    <circle cx='62' cy='50' r='9' fill='#fff'/>
+    <circle cx='40' cy='52' r='4' fill='#000'/>
+    <circle cx='64' cy='52' r='4' fill='#000'/>
+  </svg>`;
+}
+
+// kick off loading (once); not blocking game start - images cached when ready
+const spritePromises = {
+  player: loadSprite('player', playerSvg()),
+  enemyRed: loadSprite('enemyRed', enemySvg('#ff6b6b')),
+  enemyBlue: loadSprite('enemyBlue', enemySvg('#6cf')),
+  enemyWhite: loadSprite('enemyWhite', enemySvg('#ffffff'))
+};
+Promise.all(Object.values(spritePromises)).catch(e=>{ console.warn('sprite load failed', e); });
+
+// draw helpers
+function drawPlayerSprite(ctx, px, py, dir, scale=1){
+  const img = spriteCache.player;
+  const size = TILE * 0.9 * scale;
+  if(img && img.complete){
+    ctx.save();
+    ctx.translate(px, py);
+    let angle = 0;
+    if(dir === 'right') angle = 0;
+    else if(dir === 'left') angle = Math.PI;
+    else if(dir === 'up') angle = -Math.PI/2;
+    else if(dir === 'down') angle = Math.PI/2;
+    ctx.rotate(angle);
+    ctx.drawImage(img, -size/2, -size/2, size, size);
+    ctx.restore();
+  } else {
+    // fallback: simple circle
+    ctx.save(); ctx.translate(px,py); ctx.scale(scale,scale);
+    ctx.fillStyle = '#ffd86b'; ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0,0, TILE*0.38, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawEnemySprite(ctx, px, py, enState, blinkOn, flip=false){
+  const size = TILE * 0.9;
+  if(enState === 'eaten'){
+    // draw eyes only (same as before)
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(px - TILE*0.15, py - TILE*0.05, TILE*0.12, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(px + TILE*0.15, py - TILE*0.05, TILE*0.12, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(px - TILE*0.15, py - TILE*0.05, TILE*0.06, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(px + TILE*0.15, py - TILE*0.05, TILE*0.06, 0, Math.PI*2); ctx.fill();
+    return;
+  }
+  let key = 'enemyRed';
+  if(enState === 'vulnerable'){
+    key = blinkOn ? 'enemyBlue' : 'enemyWhite';
+  }
+  const img = spriteCache[key];
+  if(img && img.complete){
+    ctx.save();
+    if(flip){ ctx.translate(px,py); ctx.scale(-1,1); ctx.drawImage(img, -size/2, -size/2, size, size); }
+    else { ctx.drawImage(img, px - size/2, py - size/2, size, size); }
+    ctx.restore();
+  } else {
+    // fallback circle
+    if(enState === 'vulnerable') ctx.fillStyle = '#9fe6ff';
+    else ctx.fillStyle = '#ff6b6b';
+    ctx.beginPath(); ctx.arc(px,py, TILE*0.36, 0, Math.PI*2); ctx.fill();
+  }
+}
+
 // Mutate base map slightly: flip some walls/floors and reposition dots/power slightly
 function mutateMap(baseMapChars, rng, stageIndex){
   const h = baseMapChars.length, w = baseMapChars[0].length;
@@ -339,7 +445,7 @@ function initStage(stageIndex){
       if(ch === '#') row.push(0);
       else if(ch === '.') { row.push(1); state.dotsTotal++; }
       else if(ch === 'o') { row.push(3); state.dotsTotal++; }
-      else if(ch === 'P') { row.push(2); state.player = {x,y, prevX:x, prevY:y, moveStart:0}; state.playerStart = {x,y}; }
+      else if(ch === 'P') { row.push(2); state.player = {x,y, prevX:x, prevY:y, moveStart:0, dir:'right'}; state.playerStart = {x,y}; }
       else if(ch === 'E') {
         row.push(2);
         // create enemy object per-level
@@ -532,36 +638,34 @@ function draw(){
     return {rx, ry};
   }
 
-  // player (rendered with interpolation and pickup pulse)
+  // player (rendered with interpolation and pickup pulse) -> now uses SVG sprite
   let pPos = getRenderPos(state.player);
   let playerScale = 1;
   if(state.lastPickupAt && Date.now() - state.lastPickupAt < 320){ playerScale = 1 + 0.14*(1 - ((Date.now()-state.lastPickupAt)/320)); }
-  ctx.save();
-  ctx.translate(pPos.rx, pPos.ry);
-  ctx.scale(playerScale, playerScale);
-  ctx.fillStyle = '#ffd86b'; ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0,0, TILE*0.38, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-  ctx.restore();
+  drawPlayerSprite(ctx, pPos.rx, pPos.ry, state.player.dir || 'right', playerScale);
 
-  // enemies (render all enemies with interpolation and vulnerable/eaten visual)
+  // enemies (render all enemies with interpolation and vulnerable/eaten visual) -> uses SVG sprites
   for(const en of state.enemies){
     let ePos = getRenderPos(en);
     if(en.state === 'eaten'){
-      // draw eyes to indicate eaten (will respawn shortly)
-      ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(ePos.rx - TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2); ctx.fill();
-      ctx.beginPath(); ctx.arc(ePos.rx + TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2); ctx.fill();
+      // draw eaten eyes (same as before)
+      drawEnemySprite(ctx, ePos.rx, ePos.ry, 'eaten', false, false);
     } else if(en.state === 'vulnerable'){
-      // blinking when vulnerability is ending
+      // blinking when vulnerability is ending: alternate blue/white in the blink window
       const BLINK_START = 2000; // ms
       const BLINK_PERIOD = 250; // ms
       let remaining = state.poweredUntil - Date.now();
-      let visible = true;
-      if(remaining <= BLINK_START){ visible = Math.floor(remaining / BLINK_PERIOD) % 2 === 0; }
-      if(visible){ ctx.fillStyle = '#9fe6ff'; ctx.beginPath(); ctx.arc(ePos.rx, ePos.ry, TILE*0.36, 0, Math.PI*2); ctx.fill(); }
+      if(remaining <= BLINK_START){
+        const blinkOn = Math.floor(remaining / BLINK_PERIOD) % 2 === 0;
+        drawEnemySprite(ctx, ePos.rx, ePos.ry, 'vulnerable', blinkOn, false);
+      } else {
+        drawEnemySprite(ctx, ePos.rx, ePos.ry, 'vulnerable', true, false);
+      }
     } else {
-      ctx.fillStyle = '#ff6b6b'; ctx.beginPath(); ctx.arc(ePos.rx, ePos.ry, TILE*0.36, 0, Math.PI*2); ctx.fill();
-      ctx.strokeStyle = 'rgba(255,107,107,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+      // normal enemy
+      // optional flip when moving left (eye-direction effect)
+      const flip = (en.prevX !== undefined) ? (en.x < en.prevX) : false;
+      drawEnemySprite(ctx, ePos.rx, ePos.ry, 'normal', false, flip);
     }
   }
 
@@ -597,6 +701,11 @@ function tryMovePlayer(dx,dy){
   state.player.prevX = state.player.x; state.player.prevY = state.player.y;
   state.player.x = nx; state.player.y = ny;
   state.player.moveStart = Date.now();
+  // update render-only direction for sprite
+  if(dx === 1) state.player.dir = 'right';
+  else if(dx === -1) state.player.dir = 'left';
+  else if(dy === 1) state.player.dir = 'down';
+  else if(dy === -1) state.player.dir = 'up';
   // collect tile
   if(state.tiles[ny][nx] === 1){
     state.tiles[ny][nx] = 2;
