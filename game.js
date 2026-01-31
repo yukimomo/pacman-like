@@ -92,7 +92,14 @@ let state = {
   // params that can change per-stage
   enemyMoveInterval: 350,
   aiRecomputeInterval: 400,
-  powerDuration: 6000
+  powerDuration: 6000,
+  // visual/effect state (non-gameplay)
+  pops: [], // floating score/dot pops
+  shakeUntil: 0,
+  shakeMag: 4,
+  stageDisplayUntil: 0,
+  lastPickupAt: 0,
+  lastPickupPos: null
 };
 
 // enemy movement timer id (used to change interval per stage)
@@ -109,6 +116,16 @@ function shuffleArray(arr, rng){
     const j = Math.floor(rng()* (i+1));
     const t = arr[i]; arr[i]=arr[j]; arr[j]=t;
   }
+}
+
+// convert hex color (#rrggbb or #rgb) to rgba string with given alpha
+function hexToRgba(hex, alpha){
+  hex = (hex || '').replace('#','');
+  if(hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+  const r = parseInt(hex.substring(0,2) || '0',16);
+  const g = parseInt(hex.substring(2,4) || '0',16);
+  const b = parseInt(hex.substring(4,6) || '0',16);
+  return 'rgba('+r+','+g+','+b+','+ (alpha||1) +')';
 }
 
 // Mutate base map slightly: flip some walls/floors and reposition dots/power slightly
@@ -336,6 +353,9 @@ function initStage(stageIndex){
   // set enemy tick according to stage (scaled)
   setEnemyTickInterval(state.enemyMoveInterval);
 
+  // show stage overlay briefly
+  state.stageDisplayUntil = Date.now() + 900;
+
   updateHUD();
 }
 
@@ -445,35 +465,52 @@ renderScores();
 
 
 function draw(){
-  // background
-  ctx.fillStyle = '#000';
+  // screen shake offset
+  let offsetX = 0, offsetY = 0;
+  if(Date.now() < state.shakeUntil){
+    const mag = state.shakeMag || 4;
+    offsetX = (Math.random() - 0.5) * mag * 2;
+    offsetY = (Math.random() - 0.5) * mag * 2;
+  }
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+
+  // background (neon subtle grid)
+  ctx.fillStyle = '#02030b';
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
+  // tiles
   for(let y=0;y<rows;y++){
     for(let x=0;x<cols;x++){
       let t = state.tiles[y][x];
       let px = x*TILE, py = y*TILE;
-      // walls
+      // walls (neon edge)
       if(t===0){
-        ctx.fillStyle = '#224';
+        ctx.fillStyle = '#081424';
         ctx.fillRect(px,py,TILE,TILE);
+        ctx.strokeStyle = 'rgba(126,249,255,0.04)'; ctx.lineWidth = 1;
+        ctx.strokeRect(px+1,py+1,TILE-2,TILE-2);
       } else {
         // floor subtle shading
-        ctx.fillStyle = '#080808';
+        ctx.fillStyle = '#070814';
         ctx.fillRect(px,py,TILE,TILE);
         // dot
         if(t===1){
-          ctx.fillStyle = '#fff';
+          // glow
+          ctx.fillStyle = '#e8fbff';
           ctx.beginPath();
-          ctx.arc(px+TILE/2, py+TILE/2, 4, 0, Math.PI*2);
+          ctx.arc(px+TILE/2, py+TILE/2, 4.5, 0, Math.PI*2);
           ctx.fill();
+          ctx.fillStyle = 'rgba(126,249,255,0.06)'; ctx.beginPath(); ctx.arc(px+TILE/2, py+TILE/2, 9,0,Math.PI*2); ctx.fill();
         }
         // power pellet
         if(t===3){
           ctx.fillStyle = '#6cf';
           ctx.beginPath();
-          ctx.arc(px+TILE/2, py+TILE/2, 7, 0, Math.PI*2);
+          ctx.arc(px+TILE/2, py+TILE/2, 7.5, 0, Math.PI*2);
           ctx.fill();
+          ctx.fillStyle = 'rgba(108,204,255,0.12)'; ctx.beginPath(); ctx.arc(px+TILE/2, py+TILE/2, 14,0,Math.PI*2); ctx.fill();
         }
       }
     }
@@ -495,25 +532,25 @@ function draw(){
     return {rx, ry};
   }
 
-  // player (rendered with interpolation)
+  // player (rendered with interpolation and pickup pulse)
   let pPos = getRenderPos(state.player);
-  ctx.fillStyle = '#ffec3d';
-  ctx.beginPath();
-  ctx.arc(pPos.rx, pPos.ry, TILE*0.38, 0, Math.PI*2);
-  ctx.fill();
+  let playerScale = 1;
+  if(state.lastPickupAt && Date.now() - state.lastPickupAt < 320){ playerScale = 1 + 0.14*(1 - ((Date.now()-state.lastPickupAt)/320)); }
+  ctx.save();
+  ctx.translate(pPos.rx, pPos.ry);
+  ctx.scale(playerScale, playerScale);
+  ctx.fillStyle = '#ffd86b'; ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0,0, TILE*0.38, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.restore();
 
-  // enemies (render all enemies with interpolation)
+  // enemies (render all enemies with interpolation and vulnerable/eaten visual)
   for(const en of state.enemies){
     let ePos = getRenderPos(en);
     if(en.state === 'eaten'){
       // draw eyes to indicate eaten (will respawn shortly)
       ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(ePos.rx - TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(ePos.rx + TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(ePos.rx - TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(ePos.rx + TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2); ctx.fill();
     } else if(en.state === 'vulnerable'){
       // blinking when vulnerability is ending
       const BLINK_START = 2000; // ms
@@ -521,30 +558,34 @@ function draw(){
       let remaining = state.poweredUntil - Date.now();
       let visible = true;
       if(remaining <= BLINK_START){ visible = Math.floor(remaining / BLINK_PERIOD) % 2 === 0; }
-      if(visible){
-        ctx.fillStyle = '#6cf';
-        ctx.beginPath();
-        ctx.arc(ePos.rx, ePos.ry, TILE*0.38, 0, Math.PI*2);
-        ctx.fill();
-      }
+      if(visible){ ctx.fillStyle = '#9fe6ff'; ctx.beginPath(); ctx.arc(ePos.rx, ePos.ry, TILE*0.36, 0, Math.PI*2); ctx.fill(); }
     } else {
-      ctx.fillStyle = '#ff4d4f';
-      ctx.beginPath();
-      ctx.arc(ePos.rx, ePos.ry, TILE*0.38, 0, Math.PI*2);
-      ctx.fill();
+      ctx.fillStyle = '#ff6b6b'; ctx.beginPath(); ctx.arc(ePos.rx, ePos.ry, TILE*0.36, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,107,107,0.6)'; ctx.lineWidth = 2; ctx.stroke();
     }
   }
 
-  // overlays
-  if(state.gameState !== 'playing'){
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle = '#fff';
-    ctx.font = '24px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText(state.gameState === 'win' ? 'You Win! 🎉' : 'Game Over 💀', canvas.width/2, canvas.height/2);
+  // floating pops (scores/dot pickups)
+  const now = Date.now();
+  for(let i = state.pops.length-1;i>=0;i--){ const p = state.pops[i]; const dt = now - p.start; const life = 900; if(dt > life){ state.pops.splice(i,1); continue; } const t = dt / life; const alpha = 1 - t; ctx.fillStyle = hexToRgba(p.color || '#fff', alpha); ctx.font = '14px Arial'; ctx.textAlign = 'center'; ctx.fillText(p.text, p.x*TILE + TILE/2, p.y*TILE + TILE/2 - 6 - t*28); }
+
+  // Stage overlay
+  if(state.stageDisplayUntil && Date.now() < state.stageDisplayUntil){
+    const t = 1 - (state.stageDisplayUntil - Date.now()) / 900; // 0..1
+    ctx.save(); ctx.globalAlpha = 0.85 * (1 - Math.abs(0.5 - t)); ctx.fillStyle = '#001826'; ctx.fillRect(canvas.width*0.12, canvas.height*0.38, canvas.width*0.76, 80);
+    ctx.fillStyle = '#7ef9ff'; ctx.font = 'bold 36px Arial'; ctx.textAlign = 'center'; ctx.fillText('STAGE ' + (state.stageIndex + 1), canvas.width/2, canvas.height*0.43 + 40);
+    ctx.restore();
   }
+
+  // overlays (game over / win)
+  if(state.gameState !== 'playing'){
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#fff'; ctx.font = '24px Arial'; ctx.textAlign = 'center'; ctx.fillText(state.gameState === 'win' ? 'You Win! 🎉' : 'Game Over 💀', canvas.width/2, canvas.height/2);
+  }
+
+  ctx.restore(); // end shake translate
 }
+
 
 function tryMovePlayer(dx,dy){
   if(state.gameState !== 'playing') return;
@@ -561,6 +602,9 @@ function tryMovePlayer(dx,dy){
     state.tiles[ny][nx] = 2;
     state.dotsLeft--;
     state.score += 10;
+    // visual: pickup effect
+    state.lastPickupAt = Date.now(); state.lastPickupPos = {x:nx,y:ny};
+    state.pops.push({x:nx,y:ny,text:'+10',color:'#bfe9ff',start:Date.now()});
     updateHUD();
     if(state.dotsLeft === 0){ nextStage(); }
   } else if(state.tiles[ny][nx] === 3){
@@ -569,8 +613,9 @@ function tryMovePlayer(dx,dy){
     state.score += 50;
     state.poweredUntil = Date.now() + (state.powerDuration || 6000);
     // set ALL enemies to vulnerable
-    for(const en of state.enemies){ en.state = 'vulnerable'; }
-    updateHUD();
+    for(const en of state.enemies){ en.state = 'vulnerable'; }    // visual: pickup effect
+    state.lastPickupAt = Date.now(); state.lastPickupPos = {x:nx,y:ny};
+    state.pops.push({x:nx,y:ny,text:'+50',color:'#6cf',start:Date.now()});    updateHUD();
     if(state.dotsLeft === 0){ nextStage(); }
   }
   checkCollision();
@@ -679,10 +724,15 @@ function checkCollision(){
         en.state = 'eaten';
         en.eatenUntil = Date.now() + 800; // show eaten eyes for 800ms
         en.aiNext = null; en.aiLast = 0;
+        // visual: enemy eaten pop and flash
+        en.eatenEffectAt = Date.now();
+        state.pops.push({x:en.x,y:en.y,text:'+200',color:'#6cf',start:Date.now()});
         updateHUD();
       } else if(en.state === 'normal') {
         // player hit
         state.lives -= 1;
+        // visual: screen shake
+        state.shakeUntil = Date.now() + 500; state.shakeMag = 6;
         updateHUD();
         if(state.lives <= 0){
           state.gameState = 'gameover';
