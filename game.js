@@ -62,7 +62,7 @@ function init(){
       else if(ch === '.') { row.push(1); state.dotsTotal++; }
       else if(ch === 'o') { row.push(3); state.dotsTotal++; }
       else if(ch === 'P') { row.push(2); state.player = {x,y, prevX:x, prevY:y, moveStart:0}; state.playerStart = {x,y}; }
-      else if(ch === 'E') { row.push(2); state.enemy = {x,y, prev:null, prevX:x, prevY:y, moveStart:0, state:'normal', eatenUntil:0}; state.enemyStart = {x,y}; }
+      else if(ch === 'E') { row.push(2); state.enemy = {x,y, prev:null, prevX:x, prevY:y, moveStart:0, state:'normal', eatenUntil:0, aiLast:0, aiNext:null}; state.enemyStart = {x,y}; }
       else row.push(2);
     }
     state.tiles.push(row);
@@ -226,30 +226,87 @@ function neighbors(x,y){
 
 function manhattan(a,b){ return Math.abs(a.x-b.x)+Math.abs(a.y-b.y); }
 
+// Check if a tile is walkable (not a wall) - function required by BFS
+function isWalkable(tx, ty, map){
+  return tx >= 0 && tx < cols && ty >= 0 && ty < rows && map[ty][tx] !== 0;
+}
+
+// BFS: returns the next tile {nx, ny} on the shortest path from start -> goal, or null if no path
+function bfsNextStep(start, goal, map){
+  // start, goal: {x, y}
+  if(start.x === goal.x && start.y === goal.y) return null;
+  const total = rows * cols;
+  const startIdx = start.y * cols + start.x;
+  const goalIdx = goal.y * cols + goal.x;
+  const q = [];
+  const visited = new Uint8Array(total);
+  const parent = new Int32Array(total).fill(-1);
+
+  q.push(startIdx);
+  visited[startIdx] = 1;
+
+  while(q.length){
+    const idx = q.shift();
+    const cx = idx % cols, cy = Math.floor(idx / cols);
+    const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+    for(const d of dirs){
+      const nx = cx + d[0], ny = cy + d[1];
+      if(!isWalkable(nx, ny, map)) continue;
+      const nIdx = ny * cols + nx;
+      if(visited[nIdx]) continue;
+      visited[nIdx] = 1;
+      parent[nIdx] = idx;
+      if(nIdx === goalIdx){
+        // reconstruct path: walk back from goal to the tile after start
+        let cur = goalIdx;
+        while(parent[cur] !== startIdx){
+          cur = parent[cur];
+          if(cur === -1) break; // safety
+        }
+        return { nx: cur % cols, ny: Math.floor(cur / cols) };
+      }
+      q.push(nIdx);
+    }
+  }
+  return null; // no path
+}
+
+// Update enemy AI: compute next step via BFS occasionally (when at tile center or after interval)
+function updateEnemyAI(enemy, player, map){
+  if(enemy.state === 'eaten') return; // don't compute while eaten
+  const now = Date.now();
+  const atCenter = !enemy.moveStart || (now - (enemy.moveStart || 0) >= MOVE_MS);
+  const RECOMPUTE_INTERVAL = 400; // ms, can be tuned
+  if(!atCenter && (now - (enemy.aiLast || 0) < RECOMPUTE_INTERVAL)) return; // skip
+  enemy.aiLast = now;
+  const step = bfsNextStep({x:enemy.x, y:enemy.y}, {x:player.x, y:player.y}, map);
+  enemy.aiNext = step; // can be null
+}
+
+// Enemy movement now uses BFS next step and falls back to random move if no path
 function moveEnemy(){
   if(state.gameState !== 'playing') return;
   if(Date.now() < state.respawnUntil) return; // pause while respawning
-  let n = neighbors(state.enemy.x, state.enemy.y);
-  if(n.length===0) return;
+  if(state.enemy.state === 'eaten') return; // don't move while eaten
 
-  // sometimes random move
-  if(Math.random() < 0.25){
-    let choice = n[Math.floor(Math.random()*n.length)];
-    state.enemy.prev = {x:state.enemy.x,y:state.enemy.y};
+  // possibly compute AI
+  updateEnemyAI(state.enemy, state.player, state.tiles);
+
+  // follow BFS step if available
+  const step = state.enemy.aiNext;
+  if(step && (step.nx !== state.enemy.x || step.ny !== state.enemy.y)){
+    state.enemy.prev = {x:state.enemy.x, y:state.enemy.y};
     state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y;
-    state.enemy.x = choice.x; state.enemy.y = choice.y;
+    state.enemy.x = step.nx; state.enemy.y = step.ny;
     state.enemy.moveStart = Date.now();
     checkCollision();
     return;
   }
 
-  // greedy towards player
-  n.sort((a,b)=> manhattan(a, state.player) - manhattan(b, state.player));
-  let choice = n[0];
-  if(state.enemy.prev){
-    let back = state.enemy.prev;
-    if(n.length>1 && choice.x===back.x && choice.y===back.y){ choice = n[1]; }
-  }
+  // fallback: random move (existing behavior)
+  let n = neighbors(state.enemy.x, state.enemy.y);
+  if(n.length===0) return;
+  let choice = n[Math.floor(Math.random()*n.length)];
   state.enemy.prev = {x:state.enemy.x,y:state.enemy.y};
   state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y;
   state.enemy.x = choice.x; state.enemy.y = choice.y;
@@ -278,6 +335,7 @@ function checkCollision(){
         state.player.prevX = state.player.x; state.player.prevY = state.player.y; state.player.moveStart = 0;
         state.enemy.x = state.enemyStart.x; state.enemy.y = state.enemyStart.y; state.enemy.prev = null;
         state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y; state.enemy.moveStart = 0;
+        state.enemy.aiNext = null; state.enemy.aiLast = 0;
         state.respawnUntil = Date.now() + 800;
         statusEl.textContent = 'Life lost';
         setTimeout(()=>{ statusEl.textContent = ''; }, 1000);
@@ -312,6 +370,7 @@ function updateTimers(){
     state.enemy.state = 'normal';
     state.enemy.x = state.enemyStart.x; state.enemy.y = state.enemyStart.y; state.enemy.prev = null;
     state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y; state.enemy.moveStart = 0;
+    state.enemy.aiNext = null; state.enemy.aiLast = 0;
   }
 }
 
