@@ -2,6 +2,7 @@
 // Map chars: '#' wall, '.' dot, 'o' power-pellet, ' ' empty, 'P' player, 'E' enemy
 
 const TILE = 32;
+const MOVE_MS = 160; // ms to interpolate between tiles
 const mapSource = [
   "#################",
   "#.o.....o#.....o#",
@@ -31,9 +32,9 @@ let restartBtn = document.getElementById('restart');
 
 let state = {
   tiles: [], // 0 wall, 1 dot, 2 empty, 3 power
-  player: {x:0,y:0},
+  player: {x:0,y:0, prevX:0, prevY:0, moveStart:0},
   playerStart: {x:0,y:0},
-  enemy: {x:0,y:0, prev:null, state:'normal', eatenUntil:0},
+  enemy: {x:0,y:0, prev:null, prevX:0, prevY:0, moveStart:0, state:'normal', eatenUntil:0},
   enemyStart: {x:0,y:0},
   dotsTotal:0,
   dotsLeft:0,
@@ -60,8 +61,8 @@ function init(){
       if(ch === '#') row.push(0);
       else if(ch === '.') { row.push(1); state.dotsTotal++; }
       else if(ch === 'o') { row.push(3); state.dotsTotal++; }
-      else if(ch === 'P') { row.push(2); state.player = {x,y}; state.playerStart = {x,y}; }
-      else if(ch === 'E') { row.push(2); state.enemy = {x,y, prev:null, state:'normal', eatenUntil:0}; state.enemyStart = {x,y}; }
+      else if(ch === 'P') { row.push(2); state.player = {x,y, prevX:x, prevY:y, moveStart:0}; state.playerStart = {x,y}; }
+      else if(ch === 'E') { row.push(2); state.enemy = {x,y, prev:null, prevX:x, prevY:y, moveStart:0, state:'normal', eatenUntil:0}; state.enemyStart = {x,y}; }
       else row.push(2);
     }
     state.tiles.push(row);
@@ -123,21 +124,39 @@ function draw(){
     }
   }
 
-  // player
+  // interpolation helper
+  function getRenderPos(entity){
+    let sx = (entity.prevX !== undefined) ? entity.prevX : entity.x;
+    let sy = (entity.prevY !== undefined) ? entity.prevY : entity.y;
+    let start = entity.moveStart || 0;
+    let t = 1;
+    if(start > 0){
+      let dt = Date.now() - start;
+      if(dt < MOVE_MS){ t = dt / MOVE_MS; }
+      else { t = 1; }
+    }
+    let rx = (sx + (entity.x - sx) * t) * TILE + TILE/2;
+    let ry = (sy + (entity.y - sy) * t) * TILE + TILE/2;
+    return {rx, ry};
+  }
+
+  // player (rendered with interpolation)
+  let pPos = getRenderPos(state.player);
   ctx.fillStyle = '#ffec3d';
   ctx.beginPath();
-  ctx.arc(state.player.x*TILE + TILE/2, state.player.y*TILE + TILE/2, TILE*0.38, 0, Math.PI*2);
+  ctx.arc(pPos.rx, pPos.ry, TILE*0.38, 0, Math.PI*2);
   ctx.fill();
 
-  // enemy (states: normal, vulnerable(with blink), eaten)
+  // enemy (states: normal, vulnerable(with blink), eaten) - rendered with interpolation
+  let ePos = getRenderPos(state.enemy);
   if(state.enemy.state === 'eaten'){
     // draw eyes to indicate eaten (will respawn shortly)
     ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.arc(state.enemy.x*TILE + TILE*0.35, state.enemy.y*TILE + TILE*0.45, TILE*0.12, 0, Math.PI*2);
+    ctx.arc(ePos.rx - TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2);
     ctx.fill();
     ctx.beginPath();
-    ctx.arc(state.enemy.x*TILE + TILE*0.65, state.enemy.y*TILE + TILE*0.45, TILE*0.12, 0, Math.PI*2);
+    ctx.arc(ePos.rx + TILE*0.15, ePos.ry - TILE*0.05, TILE*0.12, 0, Math.PI*2);
     ctx.fill();
   } else if(state.enemy.state === 'vulnerable'){
     // blinking when vulnerability is ending
@@ -149,13 +168,13 @@ function draw(){
     if(visible){
       ctx.fillStyle = '#6cf';
       ctx.beginPath();
-      ctx.arc(state.enemy.x*TILE + TILE/2, state.enemy.y*TILE + TILE/2, TILE*0.38, 0, Math.PI*2);
+      ctx.arc(ePos.rx, ePos.ry, TILE*0.38, 0, Math.PI*2);
       ctx.fill();
     }
   } else {
     ctx.fillStyle = '#ff4d4f';
     ctx.beginPath();
-    ctx.arc(state.enemy.x*TILE + TILE/2, state.enemy.y*TILE + TILE/2, TILE*0.38, 0, Math.PI*2);
+    ctx.arc(ePos.rx, ePos.ry, TILE*0.38, 0, Math.PI*2);
     ctx.fill();
   }
 
@@ -177,7 +196,9 @@ function tryMovePlayer(dx,dy){
   let ny = state.player.y + dy;
   if(nx<0||nx>=cols||ny<0||ny>=rows) return;
   if(state.tiles[ny][nx] === 0) return; // wall
+  state.player.prevX = state.player.x; state.player.prevY = state.player.y;
   state.player.x = nx; state.player.y = ny;
+  state.player.moveStart = Date.now();
   // collect tile
   if(state.tiles[ny][nx] === 1){
     state.tiles[ny][nx] = 2;
@@ -215,7 +236,9 @@ function moveEnemy(){
   if(Math.random() < 0.25){
     let choice = n[Math.floor(Math.random()*n.length)];
     state.enemy.prev = {x:state.enemy.x,y:state.enemy.y};
+    state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y;
     state.enemy.x = choice.x; state.enemy.y = choice.y;
+    state.enemy.moveStart = Date.now();
     checkCollision();
     return;
   }
@@ -228,7 +251,9 @@ function moveEnemy(){
     if(n.length>1 && choice.x===back.x && choice.y===back.y){ choice = n[1]; }
   }
   state.enemy.prev = {x:state.enemy.x,y:state.enemy.y};
+  state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y;
   state.enemy.x = choice.x; state.enemy.y = choice.y;
+  state.enemy.moveStart = Date.now();
   checkCollision();
 }
 
@@ -250,7 +275,9 @@ function checkCollision(){
       } else {
         // respawn both
         state.player.x = state.playerStart.x; state.player.y = state.playerStart.y;
+        state.player.prevX = state.player.x; state.player.prevY = state.player.y; state.player.moveStart = 0;
         state.enemy.x = state.enemyStart.x; state.enemy.y = state.enemyStart.y; state.enemy.prev = null;
+        state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y; state.enemy.moveStart = 0;
         state.respawnUntil = Date.now() + 800;
         statusEl.textContent = 'Life lost';
         setTimeout(()=>{ statusEl.textContent = ''; }, 1000);
@@ -284,6 +311,7 @@ function updateTimers(){
   if(state.enemy.state === 'eaten' && Date.now() >= state.enemy.eatenUntil){
     state.enemy.state = 'normal';
     state.enemy.x = state.enemyStart.x; state.enemy.y = state.enemyStart.y; state.enemy.prev = null;
+    state.enemy.prevX = state.enemy.x; state.enemy.prevY = state.enemy.y; state.enemy.moveStart = 0;
   }
 }
 
