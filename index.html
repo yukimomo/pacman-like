@@ -13,10 +13,21 @@
     <div id="scoreboard">
       <div id="score">Score: 0</div>
       <div id="lives">Lives: ♥♥♥</div>
+      <div id="stage">Stage: 1</div>
+      <div id="seed">Seed: -</div>
     </div>
     <div id="status"></div>
     <div id="power" style="display:none">POWER!</div>
     <button id="restart">Restart</button>
+  </div>
+
+  <!-- Leaderboard UI -->
+  <div id="leaderboard" class="message">
+    <div style="display:flex;gap:8px;align-items:center;">
+      <strong>Local Rankings</strong>
+      <button id="clearScores">Clear Rankings</button>
+    </div>
+    <div id="scoresList" style="margin-top:8px;"></div>
   </div>
 
   <canvas id="game"></canvas>
