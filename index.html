@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pacman-like</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1>Pacman-like</h1>
+
+  <div id="hud">
+    <div id="scoreboard">
+      <div id="score">Score: 0</div>
+      <div id="lives">Lives: ♥♥♥</div>
+    </div>
+    <div id="status"></div>
+    <div id="power" style="display:none">POWER!</div>
+    <button id="restart">Restart</button>
+  </div>
+
+  <canvas id="game"></canvas>
+
+  <script src="game.js"></script>
+</body>
+</html>
